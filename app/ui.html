@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>snorTTS UI</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22c55e;
+      --accent-2: #06b6d4;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--text);
+      background: radial-gradient(1000px 500px at 10% 0%, #1f2937, var(--bg));
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      max-width: 920px;
+      margin: 0 auto;
+      background: linear-gradient(180deg, #0b1220, var(--panel));
+      border: 1px solid #1f2937;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    p { margin: 0 0 16px; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .full { grid-column: 1 / -1; }
+    label { display: block; font-size: 0.9rem; margin-bottom: 6px; color: #cbd5e1; }
+    select, textarea, button {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: #0b1020;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 0.95rem;
+    }
+    textarea { min-height: 110px; resize: vertical; }
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      color: #001018;
+      border: 0;
+    }
+    button.secondary {
+      background: #1f2937;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+    }
+    .status { margin-top: 10px; font-size: 0.92rem; color: var(--muted); }
+    .error { color: var(--danger); }
+    .ok { color: #4ade80; }
+    audio { width: 100%; margin-top: 14px; }
+    code { color: #7dd3fc; }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Synth TTS endpoint</h1>
+    <p>Generates audio from <code>/v1/tts</code> using server-side defaults.</p>
+
+    <div class="grid">
+      <div>
+        <label for="language">Language</label>
+        <select id="language"></select>
+      </div>
+      <div>
+        <label for="user_id">User ID</label>
+        <select id="user_id"></select>
+      </div>
+      <div class="full">
+        <label for="utterance">Utterance</label>
+        <textarea id="utterance" placeholder="Type text to synthesize...">नमस्ते, आज आप कैसे हैं?</textarea>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="generate">Generate Audio</button>
+      <button class="secondary" id="copyCurl">Copy cURL</button>
+    </div>
+
+    <div id="status" class="status"></div>
+    <audio id="player" controls></audio>
+  </div>
+
+  <script>
+    const state = { speakers: {} };
+    const $ = (id) => document.getElementById(id);
+
+    async function loadOptions() {
+      const res = await fetch('/v1/options');
+      if (!res.ok) throw new Error('Failed to load options');
+      const data = await res.json();
+      state.speakers = data.speakers || {};
+      const langSel = $('language');
+      langSel.innerHTML = '';
+      Object.keys(state.speakers).forEach((lang) => {
+        const opt = document.createElement('option');
+        opt.value = lang;
+        opt.textContent = lang;
+        langSel.appendChild(opt);
+      });
+      updateUsers();
+      langSel.addEventListener('change', updateUsers);
+    }
+
+    function updateUsers() {
+      const lang = $('language').value;
+      const users = Object.keys(state.speakers[lang] || {});
+      const userSel = $('user_id');
+      userSel.innerHTML = '';
+      users.forEach((u) => {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = u;
+        userSel.appendChild(opt);
+      });
+    }
+
+    function setStatus(text, cls = '') {
+      const el = $('status');
+      el.className = `status ${cls}`.trim();
+      el.textContent = text;
+    }
+
+    async function generate() {
+      const payload = {
+        utterance: $('utterance').value.trim(),
+        language: $('language').value,
+        user_id: $('user_id').value,
+      };
+      if (!payload.utterance) {
+        setStatus('Utterance is required.', 'error');
+        return;
+      }
+
+      setStatus('Generating...');
+      $('generate').disabled = true;
+
+      try {
+        const res = await fetch('/v1/tts?response_mode=wav', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`${res.status} ${txt}`);
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const player = $('player');
+        player.src = url;
+        await player.play().catch(() => {});
+        setStatus('Audio generated successfully.', 'ok');
+      } catch (err) {
+        setStatus(`Failed: ${err.message}`, 'error');
+      } finally {
+        $('generate').disabled = false;
+      }
+    }
+
+    function copyCurl() {
+      const payload = {
+        utterance: $('utterance').value.trim(),
+        language: $('language').value,
+        user_id: $('user_id').value,
+      };
+      const cmd = `curl -X POST 'http://127.0.0.1:8000/v1/tts?response_mode=wav' -H 'Content-Type: application/json' -d '${JSON.stringify(payload)}' --output tts.wav`;
+      navigator.clipboard.writeText(cmd)
+        .then(() => setStatus('cURL copied to clipboard.', 'ok'))
+        .catch(() => setStatus('Could not copy cURL.', 'error'));
+    }
+
+    $('generate').addEventListener('click', generate);
+    $('copyCurl').addEventListener('click', copyCurl);
+    loadOptions().catch((e) => setStatus(e.message, 'error'));
+  </script>
+</body>
+</html>

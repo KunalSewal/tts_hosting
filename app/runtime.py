@@ -62,6 +62,10 @@ class TTSRuntime:
             if self._loaded:
                 return
 
+            # Some environments set HF fast transfer globally without
+            # installing hf_transfer, which breaks all downloads.
+            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
             model_name = model_name or os.getenv("MODEL_NAME", "Mevearth2/Quantized-Merged-TTS")
             token = self._resolve_hf_token(hf_token)
 
@@ -155,13 +159,24 @@ class TTSRuntime:
     def _apply_speed(audio: np.ndarray, speed: float) -> np.ndarray:
         if abs(speed - 1.0) <= 1e-4:
             return audio
-        audio_t = torch.from_numpy(audio).unsqueeze(0)
-        out_t, _ = torchaudio.sox_effects.apply_effects_tensor(
-            audio_t,
-            SAMPLE_RATE,
-            effects=[["tempo", f"{speed}"]],
-        )
-        return out_t.squeeze(0).cpu().numpy()
+        # Prefer Sox tempo when available; some runtime builds omit sox_effects.
+        if hasattr(torchaudio, "sox_effects") and hasattr(torchaudio.sox_effects, "apply_effects_tensor"):
+            audio_t = torch.from_numpy(audio).unsqueeze(0)
+            out_t, _ = torchaudio.sox_effects.apply_effects_tensor(
+                audio_t,
+                SAMPLE_RATE,
+                effects=[["tempo", f"{speed}"]],
+            )
+            return out_t.squeeze(0).cpu().numpy()
+
+        # Fallback: lightweight time-stretch via interpolation.
+        # This keeps service functional even without Sox bindings.
+        in_len = int(audio.shape[0])
+        out_len = max(1, int(round(in_len / speed)))
+        x_old = np.linspace(0.0, 1.0, num=in_len, dtype=np.float64)
+        x_new = np.linspace(0.0, 1.0, num=out_len, dtype=np.float64)
+        stretched = np.interp(x_new, x_old, audio.astype(np.float64))
+        return stretched.astype(np.float32)
 
     def _apply_denoise(self, audio: np.ndarray) -> np.ndarray:
         if self._df_model is None or self._df_state is None:

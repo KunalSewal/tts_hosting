@@ -4,5 +4,8 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+.venv-tts/
+.source_*
 .vscode/
 *.log
+server.log

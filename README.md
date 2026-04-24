@@ -8,6 +8,8 @@ This folder contains a complete starter pipeline for hosting your TTS model with
 - Inputs: `utterance`, `language`, `user_id`
 - Defaults are server-side tuned.
 - Optional options endpoint for dropdowns: `GET /v1/options`
+- Optional user lookup endpoint: `GET /v1/users`
+- Browser UI endpoint: `GET /ui`
 
 ## 2) API Contract
 
@@ -40,6 +42,14 @@ curl -X POST "http://localhost:8000/v1/tts?response_mode=wav" \
 ### GET /v1/options
 
 Returns dropdown-compatible language/speaker map and defaults.
+
+### GET /v1/users
+
+Returns the speaker/user mapping. Add `?language=hindi` to filter a single language.
+
+### GET /ui
+
+Browser UI for quick demo/testing.
 
 ### GET /health
 
@@ -170,3 +180,79 @@ locust -f loadtest/locustfile.py --host http://<your-runpod-url> \
 - `app/speaker_map.py`: language -> speaker IDs + default speed
 - `loadtest/locustfile.py`: parallel load test script
 - `Dockerfile`: deployable image for RunPod
+
+## 8) Persistence checklist (before stopping pod)
+
+Use this quick checklist before stopping or recreating your pod:
+
+1. Confirm critical artifacts are pushed to Hugging Face:
+  - model repos
+  - adapter checkpoints
+  - sample audio datasets (if needed)
+2. Confirm runtime config is saved in project files:
+  - `.env`
+  - `app/speaker_map.py`
+3. Keep project under `/workspace/tts_hosting` (network volume).
+4. Do not rely on root filesystem paths outside `/workspace` for anything critical.
+
+What usually persists:
+- `/workspace/*`
+- remote artifacts (Hugging Face, Git)
+
+What may not persist across image/pod recreation:
+- global apt installs
+- global pip installs
+- temporary files under root filesystem
+
+## 9) Fast recovery setup (if some data is lost)
+
+If your environment is partially reset but `/workspace/tts_hosting` still exists:
+
+1. Reinstall runtime deps and venv:
+
+```bash
+cd /workspace/tts_hosting
+bash scripts/runpod_setup.sh
+```
+
+2. Restore `.env` values (especially `HF_TOKEN` and `MODEL_NAME`).
+
+3. Start service:
+
+```bash
+cd /workspace/tts_hosting
+bash scripts/runpod_start.sh
+```
+
+4. Verify locally:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/ready
+curl http://127.0.0.1:8000/v1/options
+```
+
+5. Verify public URL (if HTTP port 8000 is exposed):
+
+```bash
+curl https://<pod-id>-8000.proxy.runpod.net/health
+```
+
+6. Smoke-test synthesis:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/v1/tts?response_mode=wav" \
+  -H "Content-Type: application/json" \
+  -d '{"utterance":"नमस्ते, आप कैसे हैं?","language":"hindi","user_id":"159"}' \
+  --output out.wav
+```
+
+## 10) Optional backup command
+
+Create a lightweight backup archive (without virtualenv and cache):
+
+```bash
+cd /workspace
+tar --exclude='.git' --exclude='.venv-tts' --exclude='__pycache__' \
+   -czf tts_hosting_backup_$(date +%F_%H%M).tar.gz tts_hosting
+```

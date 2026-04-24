@@ -3,9 +3,10 @@ import base64
 import os
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from loguru import logger
 
 from app.runtime import TTSRuntime, SAMPLE_RATE
@@ -26,6 +27,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="snorTTS Hosting API", version="1.0.0", lifespan=lifespan)
 
 
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "snorTTS Hosting API",
+        "routes": ["/health", "/ready", "/v1/options", "/v1/users", "/v1/tts", "/ui"],
+    }
+
+
+@app.get("/ui")
+def ui() -> FileResponse:
+    return FileResponse(Path(__file__).with_name("ui.html"))
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
@@ -44,6 +58,17 @@ def options() -> OptionsResponse:
         "repetition_penalty": float(os.getenv("TTS_REPETITION_PENALTY", "1.05")),
     }
     return OptionsResponse(speakers=SUPPORTED_SPEAKERS, defaults=defaults)
+
+
+@app.get("/v1/users")
+def users(language: str | None = None) -> dict:
+    if language is None:
+        return {"languages": sorted(SUPPORTED_SPEAKERS.keys()), "speakers": SUPPORTED_SPEAKERS}
+
+    if language not in SUPPORTED_SPEAKERS:
+        raise HTTPException(status_code=400, detail=f"Unsupported language '{language}'")
+
+    return {"language": language, "speakers": SUPPORTED_SPEAKERS[language]}
 
 
 @app.post("/v1/tts", response_class=Response)

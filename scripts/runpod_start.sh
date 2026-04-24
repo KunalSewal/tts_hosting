@@ -25,4 +25,8 @@ if [[ -f ".env" ]]; then
   set +a
 fi
 
+# Some pod images set this globally but do not ship hf_transfer,
+# which breaks model downloads at startup.
+export HF_HUB_ENABLE_HF_TRANSFER="0"
+
 exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT"

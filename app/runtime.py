@@ -27,6 +27,8 @@ DEFAULTS = {
     "top_p": float(os.getenv("TTS_TOP_P", "0.9")),
     "repetition_penalty": float(os.getenv("TTS_REPETITION_PENALTY", "1.05")),
     "max_seq_length": int(os.getenv("TTS_MAX_SEQ_LENGTH", "2048")),
+    "max_new_tokens": int(os.getenv("TTS_MAX_NEW_TOKENS", "1024")),
+    "do_sample": os.getenv("TTS_DO_SAMPLE", "false").lower() == "true",
     "max_words": int(os.getenv("TTS_MAX_WORDS", "50")),
     "denoise": os.getenv("TTS_DENOISE", "false").lower() == "true",
 }
@@ -42,6 +44,16 @@ class TTSRuntime:
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._loaded = False
         self._lock = threading.Lock()
+
+    def _resolve_torch_dtype(self):
+        dtype_name = os.getenv("TTS_TORCH_DTYPE", "bfloat16").strip().lower()
+        if self._device != "cuda":
+            return torch.float32
+        if dtype_name in {"bf16", "bfloat16"} and torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        if dtype_name in {"fp16", "float16", "half"}:
+            return torch.float16
+        return torch.float16
 
     @property
     def is_ready(self) -> bool:
@@ -62,6 +74,12 @@ class TTSRuntime:
             if self._loaded:
                 return
 
+            if self._device == "cuda":
+                # Fast path on modern NVIDIA GPUs: allow TF32 kernels where possible.
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.set_float32_matmul_precision("high")
+
             # Some environments set HF fast transfer globally without
             # installing hf_transfer, which breaks all downloads.
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
@@ -81,7 +99,8 @@ class TTSRuntime:
             self._model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 token=token,
-                torch_dtype=torch.float16 if self._device == "cuda" else torch.float32,
+                torch_dtype=self._resolve_torch_dtype(),
+                low_cpu_mem_usage=True,
             )
             self._model.to(self._device)
             self._model.eval()
@@ -100,6 +119,11 @@ class TTSRuntime:
 
             logger.info("Loading SNAC decoder")
             self._snac = SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
+            try:
+                self._snac.to(self._device)
+            except Exception:
+                # SNAC can still run on CPU if moving to CUDA is unavailable.
+                pass
 
             if DEFAULTS["denoise"]:
                 try:
@@ -205,19 +229,22 @@ class TTSRuntime:
 
         input_ids = inputs.input_ids.to(self._device)
         attention_mask = inputs.attention_mask.to(self._device)
-        max_new_tokens = max(32, DEFAULTS["max_seq_length"] - input_ids.shape[1])
+        max_budget = max(32, DEFAULTS["max_seq_length"] - input_ids.shape[1])
+        max_new_tokens = max(32, min(max_budget, DEFAULTS["max_new_tokens"]))
 
         with torch.inference_mode():
-            output = self._model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=DEFAULTS["temperature"],
-                top_p=DEFAULTS["top_p"],
-                repetition_penalty=DEFAULTS["repetition_penalty"],
-                eos_token_id=END_OF_SPEECH_ID,
-            )
+            generation_kwargs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "max_new_tokens": max_new_tokens,
+                "do_sample": DEFAULTS["do_sample"],
+                "repetition_penalty": DEFAULTS["repetition_penalty"],
+                "eos_token_id": END_OF_SPEECH_ID,
+            }
+            if DEFAULTS["do_sample"]:
+                generation_kwargs["temperature"] = DEFAULTS["temperature"]
+                generation_kwargs["top_p"] = DEFAULTS["top_p"]
+            output = self._model.generate(**generation_kwargs)
 
         clean_audio_ids = self._extract_audio_ids(output[0])
         if not clean_audio_ids:
@@ -226,6 +253,11 @@ class TTSRuntime:
         codes = self._snac_tokens_to_codebooks(clean_audio_ids)
         if codes is None:
             raise RuntimeError("Insufficient audio token IDs for SNAC decode")
+        if self._device == "cuda":
+            try:
+                codes = [c.to(self._device) for c in codes]
+            except Exception:
+                pass
 
         with torch.inference_mode():
             audio = self._snac.decode(codes)

@@ -35,7 +35,7 @@ source "$VENV_PATH/bin/activate"
 pip install --upgrade pip setuptools wheel
 
 # Explicit torch install for modern RunPod GPUs (including RTX 5090).
-retry_pip_install "--index-url $TORCH_INDEX_URL torch torchaudio"
+retry_pip_install "--index-url $TORCH_INDEX_URL torch>=2.8.0 torchaudio>=2.8.0"
 
 # Install the remaining app dependencies.
 retry_pip_install "-r $ROOT_DIR/requirements.txt"

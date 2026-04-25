@@ -9,3 +9,5 @@ __pycache__/
 .vscode/
 *.log
 server.log
+.env.bak*
+out_*.wav

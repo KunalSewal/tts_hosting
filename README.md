@@ -1,230 +1,78 @@
-# snorTTS Hosting Pipeline (RunPod + Load Testing)
+# TTS Hosting (RunPod, RTX 5090 Ready)
 
-This folder contains a complete starter pipeline for hosting your TTS model with a simple API and testing parallel load.
+Production starter for hosting `Mevearth2/Quantized-Merged-TTS` behind a FastAPI endpoint.
 
-## 1) What users get
+Inference behavior is aligned with `snorbyte/snorTTS-Indic-v0`:
 
-- A single HTTP endpoint: `POST /v1/tts`
-- Inputs: `utterance`, `language`, `user_id`
-- Defaults are server-side tuned.
-- Optional options endpoint for dropdowns: `GET /v1/options`
-- Optional user lookup endpoint: `GET /v1/users`
-- Browser UI endpoint: `GET /ui`
+- prompt format: `<custom_token_3><|begin_of_text|>{language}{user_id}: {utterance}<|eot_id|><custom_token_4><custom_token_5><custom_token_1>`
+- SNAC decode at 24kHz
+- language-speaker mapping with recommended speedups
 
-## 2) API Contract
+## Features
 
-### POST /v1/tts
+- `POST /v1/tts` (wav or json response)
+- `GET /v1/options` (languages and users for UI)
+- `GET /v1/users` (user map)
+- `GET /metrics` (inflight and queue metrics)
+- `GET /health` and `GET /ready`
+- `GET /ui` simple browser UI
 
-Request body:
+## Version Requirements
 
-```json
-{
-  "utterance": "नमस्ते, आप कैसे हैं?",
-  "language": "hindi",
-  "user_id": "159"
-}
-```
+## Runtime and platform
 
-Response modes:
+- RunPod GPU pod
+- NVIDIA RTX 5090 class GPU
+- Python 3.10+ (tested on Python 3.12 in this pod)
+- CUDA 12.8 wheel index for PyTorch
 
-- `response_mode=wav` (default): returns `audio/wav`
-- `response_mode=json`: returns base64 audio and metadata
+## PyTorch
 
-Example:
+- `torch>=2.8.0`
+- `torchaudio>=2.8.0`
 
-```bash
-curl -X POST "http://localhost:8000/v1/tts?response_mode=wav" \
-  -H "Content-Type: application/json" \
-  -d '{"utterance":"नमस्ते, आप कैसे हैं?","language":"hindi","user_id":"159"}' \
-  --output out.wav
-```
+Installed by `scripts/runpod_setup.sh` from:
 
-### GET /v1/options
+- `https://download.pytorch.org/whl/cu128`
 
-Returns dropdown-compatible language/speaker map and defaults.
+## Python packages
 
-### GET /v1/users
+Pinned in `requirements.txt`:
 
-Returns the speaker/user mapping. Add `?language=hindi` to filter a single language.
+- fastapi `0.115.12`
+- uvicorn `0.34.2`
+- pydantic `2.11.3`
+- numpy `1.26.4`
+- soundfile `0.13.1`
+- loguru `0.7.3`
+- huggingface_hub `0.31.1`
+- transformers `4.51.3`
+- snac `1.2.1`
 
-### GET /ui
+## First-Time Setup (one-time per fresh image)
 
-Browser UI for quick demo/testing.
-
-### GET /health
-
-Simple liveness check.
-
-### GET /ready
-
-True once model and decoder are loaded.
-
-## 3) Local run (before RunPod)
-
-1. Copy env:
+1. SSH into pod.
+2. Go to project.
+3. Configure env.
+4. Run setup script.
 
 ```bash
+cd /workspace/tts_hosting
 cp .env.example .env
-```
-
-2. Set `HF_TOKEN` in `.env`.
-
-3. Build image:
-
-```bash
-docker build -t snortts-api:latest .
-```
-
-4. Run container:
-
-```bash
-docker run --gpus all --env-file .env -p 8000:8000 snortts-api:latest
-```
-
-Optional (only if you want denoise enabled in production image):
-
-```bash
-# Add these to requirements and rebuild only if needed
-pip install librosa==0.11.0 deepfilternet==0.5.6
-```
-
-5. Smoke test:
-
-```bash
-curl http://localhost:8000/ready
-```
-
-## 4) RunPod deployment steps
-
-1. Push image to Docker Hub or GHCR.
-2. Create RunPod GPU Pod.
-3. Set container image to your pushed tag.
-4. Expose port `8000`.
-5. Add env vars from `.env.example` in RunPod UI.
-6. Wait for startup, then test `/ready`.
-7. Test `/v1/tts`.
-
-## 4B) RunPod without Docker (recommended if image build is flaky)
-
-You can deploy directly on a standard RunPod PyTorch pod without building an image.
-
-1. Create a GPU Pod from a PyTorch template (CUDA 12.1 compatible).
-2. Expose port `8000`.
-3. In Pod terminal, clone or upload this `tts_hosting` folder under `/workspace/tts_hosting`.
-4. Create `.env` (copy from `.env.example`) and set at least `HF_TOKEN`.
-5. Run setup once:
-
-```bash
-cd /workspace/tts_hosting
+# edit .env and set HF_TOKEN
 bash scripts/runpod_setup.sh
 ```
 
-Note: setup installs `torch` and `torchaudio` from the CUDA 12.8 index for better compatibility with newer GPUs (including RTX 5090-class pods).
-
-6. Start API server:
+## Start Service (manual)
 
 ```bash
 cd /workspace/tts_hosting
 bash scripts/runpod_start.sh
 ```
 
-7. Check readiness from your local machine:
+You do not need to manually activate the venv; the script does it.
 
-```bash
-curl http://<runpod-public-ip-or-url>:8000/ready
-```
-
-8. Test generation:
-
-```bash
-curl -X POST "http://<runpod-public-ip-or-url>:8000/v1/tts?response_mode=wav" \
-  -H "Content-Type: application/json" \
-  -d '{"utterance":"नमस्ते, आप कैसे हैं?","language":"hindi","user_id":"159"}' \
-  --output out.wav
-```
-
-Tip: if the pod restarts often, keep code and venv under `/workspace` so it persists.
-
-## 5) Load testing with Locust
-
-From this directory:
-
-```bash
-pip install -r loadtest/requirements.txt
-```
-
-Then run:
-
-```bash
-locust -f loadtest/locustfile.py --host http://<your-runpod-url>
-```
-
-Or headless:
-
-```bash
-locust -f loadtest/locustfile.py --host http://<your-runpod-url> \
-  --users 10 --spawn-rate 2 --run-time 5m --headless
-```
-
-## 6) Suggested test plan
-
-- Step 1: users 1, 2, 4, 8, 12
-- Step 2: record p50, p95, p99 latency
-- Step 3: record failure rate and GPU memory usage
-- Step 4: choose safe `MAX_INFLIGHT_REQUESTS`
-
-## 7) Key files
-
-- `app/main.py`: FastAPI endpoints
-- `app/runtime.py`: model load and synthesis runtime
-- `app/speaker_map.py`: language -> speaker IDs + default speed
-- `loadtest/locustfile.py`: parallel load test script
-- `Dockerfile`: deployable image for RunPod
-
-## 8) Persistence checklist (before stopping pod)
-
-Use this quick checklist before stopping or recreating your pod:
-
-1. Confirm critical artifacts are pushed to Hugging Face:
-  - model repos
-  - adapter checkpoints
-  - sample audio datasets (if needed)
-2. Confirm runtime config is saved in project files:
-  - `.env`
-  - `app/speaker_map.py`
-3. Keep project under `/workspace/tts_hosting` (network volume).
-4. Do not rely on root filesystem paths outside `/workspace` for anything critical.
-
-What usually persists:
-- `/workspace/*`
-- remote artifacts (Hugging Face, Git)
-
-What may not persist across image/pod recreation:
-- global apt installs
-- global pip installs
-- temporary files under root filesystem
-
-## 9) Fast recovery setup (if some data is lost)
-
-If your environment is partially reset but `/workspace/tts_hosting` still exists:
-
-1. Reinstall runtime deps and venv:
-
-```bash
-cd /workspace/tts_hosting
-bash scripts/runpod_setup.sh
-```
-
-2. Restore `.env` values (especially `HF_TOKEN` and `MODEL_NAME`).
-
-3. Start service:
-
-```bash
-cd /workspace/tts_hosting
-bash scripts/runpod_start.sh
-```
-
-4. Verify locally:
+## Verify Service
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -232,27 +80,101 @@ curl http://127.0.0.1:8000/ready
 curl http://127.0.0.1:8000/v1/options
 ```
 
-5. Verify public URL (if HTTP port 8000 is exposed):
+Public URL pattern:
 
-```bash
-curl https://<pod-id>-8000.proxy.runpod.net/health
+```text
+https://<pod-id>-8000.proxy.runpod.net/ui
 ```
 
-6. Smoke-test synthesis:
+Example for your pod:
+
+```text
+https://154vi25zg62qb0-8000.proxy.runpod.net/ui
+```
+
+## API Usage
+
+## Generate wav
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/v1/tts?response_mode=wav" \
   -H "Content-Type: application/json" \
-  -d '{"utterance":"नमस्ते, आप कैसे हैं?","language":"hindi","user_id":"159"}' \
+  -d '{"utterance":"नमस्ते, आज आप कैसे हैं?","language":"hindi","user_id":"159"}' \
   --output out.wav
 ```
 
-## 10) Optional backup command
-
-Create a lightweight backup archive (without virtualenv and cache):
+## Generate json
 
 ```bash
-cd /workspace
-tar --exclude='.git' --exclude='.venv-tts' --exclude='__pycache__' \
-   -czf tts_hosting_backup_$(date +%F_%H%M).tar.gz tts_hosting
+curl -X POST "http://127.0.0.1:8000/v1/tts?response_mode=json" \
+  -H "Content-Type: application/json" \
+  -d '{"utterance":"नमस्ते, आज आप कैसे हैं?","language":"hindi","user_id":"159"}'
 ```
+
+## Important Environment Variables
+
+Set in `.env`:
+
+- `MODEL_NAME=Mevearth2/Quantized-Merged-TTS`
+- `HF_TOKEN=<your_hf_token>`
+- `MAX_INFLIGHT_REQUESTS=2`
+- `MAX_QUEUE_REQUESTS=16`
+- `TTS_MAX_SEQ_LENGTH=2048`
+- `TTS_MAX_NEW_TOKENS=1024`
+- `TTS_DO_SAMPLE=false`
+- `TTS_TORCH_DTYPE=bfloat16`
+- `TTS_DENOISE=false`
+
+## Auto-start on Pod Restart (recommended)
+
+If you set a custom start command that directly launches uvicorn, you can break default RunPod startup (SSH/Jupyter).
+
+Use this Start Command in RunPod settings:
+
+```bash
+bash -lc 'cd /workspace/tts_hosting && bash scripts/runpod_autostart.sh'
+```
+
+This script:
+
+- preserves RunPod default `/start.sh`
+- runs setup only if venv is missing
+- starts API in background and logs to `server.log`
+
+## Restart Behavior After Stop/Start
+
+- Without RunPod Start Command: service is not auto-up; run `scripts/runpod_start.sh` manually.
+- With the autostart command above: service starts automatically after pod starts.
+
+## Load Testing
+
+```bash
+source /workspace/.venv-tts/bin/activate
+pip install -r loadtest/requirements.txt
+locust -f loadtest/locustfile.py --host http://127.0.0.1:8000
+```
+
+Headless example:
+
+```bash
+locust -f loadtest/locustfile.py --host http://127.0.0.1:8000 \
+  --users 8 --spawn-rate 2 --run-time 5m --headless
+```
+
+## Teammate Handoff
+
+If someone else has pod access:
+
+1. SSH in.
+2. `cd /workspace/tts_hosting`
+3. If first run on fresh image: `bash scripts/runpod_setup.sh`
+4. Start: `bash scripts/runpod_start.sh`
+5. Open `/ui` on the proxy URL.
+
+## Repository Contents (kept intentionally)
+
+- `app/` API, runtime, UI
+- `scripts/` setup, start, autostart
+- `loadtest/` Locust workload
+- `requirements.txt` pinned app deps
+- `.env.example` runtime template

@@ -1,3 +1,6 @@
+# Core app dependencies.
+# Note: torch and torchaudio are intentionally installed by scripts/runpod_setup.sh
+# from the CUDA 12.8 index (torch>=2.8.0, torchaudio>=2.8.0) for RTX 5090 compatibility.
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 pydantic==2.11.3
